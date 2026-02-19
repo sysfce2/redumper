@@ -141,6 +141,7 @@ static const std::vector<DriveConfig> DRIVE_DATABASE =
     { "PLEXTOR" , "DVDR PX-704A"     , "1.11", "07/07/05 10:00"      , "",  +30, 294,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  },
     { "PLEXTOR" , "DVDR PX-708A"     , "1.12", "03/13/06 21:00"      , "",  +30, 294,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  }, // CHECKED
     { "PLEXTOR" , "DVDR PX-708A2"    , "1.09", "03/31/06 10:00"      , "",  +30, 294,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  },
+    { "TDK"     , "DVDRW840G"        , "1.03", "10/14/03 18:00"      , "",  +30, 294,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  }, // donutbruit, PX-708 rebadge
     { "PLEXTOR" , "DVDR PX-712A"     , "1.09", "03/31/06 10:00"      , "",  +30, 295,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  }, // CHECKED
     { "PLEXTOR" , "DVDR PX-714A"     , "1.09", "10/05/05 08:00"      , "",  +30, 295,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  },
     { "PLEXTOR" , "DVDR PX-716A"     , "1.11", "03/23/07 15:10"      , "",  +30, 295,  -75, ReadMethod::D8, SectorOrder::DATA_C2_SUB, Type::PLEXTOR  }, // CHECKED
@@ -255,6 +256,17 @@ export bool drive_is_recommended(std::string_view vendor_id, std::string_view pr
 }
 
 
+std::string normalize_vendor_string(const std::string &s)
+{
+    std::string ns = normalize_string(s);
+    size_t first = ns.find_first_not_of('_');
+    if(first == std::string::npos)
+        return "";
+    size_t last = ns.find_last_not_of('_');
+    return ns.substr(first, last - first + 1);
+}
+
+
 export DriveQuery cmd_drive_query(SPTD &sptd)
 {
     DriveQuery drive_query;
@@ -264,7 +276,7 @@ export DriveQuery cmd_drive_query(SPTD &sptd)
     if(status.status_code)
         throw_line("unable to query drive info, SCSI ({})", SPTD::StatusMessage(status));
 
-    drive_query.vendor_id = normalize_string(std::string((char *)inquiry_data.vendor_id, sizeof(inquiry_data.vendor_id)));
+    drive_query.vendor_id = normalize_vendor_string(std::string((char *)inquiry_data.vendor_id, sizeof(inquiry_data.vendor_id)));
     drive_query.product_id = normalize_string(std::string((char *)inquiry_data.product_id, sizeof(inquiry_data.product_id)));
     drive_query.product_revision_level = normalize_string(std::string((char *)inquiry_data.product_revision_level, sizeof(inquiry_data.product_revision_level)));
     drive_query.vendor_specific = normalize_string(std::string((char *)inquiry_data.vendor_specific, sizeof(inquiry_data.vendor_specific)));
