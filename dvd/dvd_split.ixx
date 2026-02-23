@@ -1,9 +1,7 @@
 module;
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <numeric>
 #include <string>
 #include <vector>
 #include "throw_line.hh"
@@ -13,8 +11,9 @@ export module dvd.split;
 import cd.cdrom;
 import common;
 import dvd;
-import dvd.xbox;
+import dvd.nintendo;
 import dvd.scrambler;
+import dvd.xbox;
 import options;
 import range;
 import rom_entry;
@@ -154,7 +153,7 @@ void extract_iso(Context &ctx, Options &options)
     if(!iso_fs.is_open())
         throw_line("unable to open file ({})", iso_path.filename().string());
 
-    DVD_Scrambler scrambler;
+    dvd::Scrambler scrambler;
     std::vector<uint8_t> rf(sizeof(RecordingFrame));
     std::optional<std::uint8_t> key;
     std::vector<std::pair<int32_t, int32_t>> descramble_errors;
@@ -189,9 +188,9 @@ void extract_iso(Context &ctx, Options &options)
         if(state == State::ERROR_SKIP && !options.force_split)
             throw_line("read errors detected, unable to continue");
         auto df = RecordingFrame_to_DataFrame((RecordingFrame &)rf[0]);
-        if(df.id.zone_type == ZoneType::LEADOUT_ZONE)
+        if(df.id.id.zone_type == ZoneType::LEADOUT_ZONE)
             break;
-        if(!scrambler.descramble((uint8_t *)&df, key))
+        if(!scrambler.descramble(df, key))
         {
             if(descramble_errors.empty() || descramble_errors.back().second + 1 != lba)
                 descramble_errors.emplace_back(lba, lba);
@@ -205,10 +204,7 @@ void extract_iso(Context &ctx, Options &options)
         if(nintendo)
         {
             if(lba == 0)
-            {
-                auto sum = std::accumulate(df.cpr_mai, df.cpr_mai + 8, 0);
-                nintendo_key = ((sum >> 4) + sum) & 0xF;
-            }
+                nintendo_key = nintendo::derive_key(std::span(df.cpr_mai, df.cpr_mai + 8));
             else if(lba == ECC_FRAMES - 1)
                 key = nintendo_key;
         }
