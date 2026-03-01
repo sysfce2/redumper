@@ -20,7 +20,6 @@ import drive;
 import dvd;
 import dvd.css;
 import dvd.nintendo;
-import dvd.scrambler;
 import dvd.xbox;
 import filesystem.iso9660;
 import filesystem.udf;
@@ -504,58 +503,37 @@ DumpConfig dump_get_config(DiscType disc_type, bool raw)
 
     if(disc_type == DiscType::DVD && raw)
     {
-        config = DumpConfig{ ".sdram", sizeof(RecordingFrame), DVD_LBA_START, DVD_LBA_RCZ - (int32_t)OVERREAD_COUNT, 0 };
+        config = DumpConfig{ ".sdram", sizeof(dvd::RecordingFrame), dvd::LBA_START, 0, 0 };
     }
 
     return config;
 }
 
 
-SPTD::Status read_dvd_sectors(SPTD &sptd, uint8_t *sectors, uint32_t sector_size, int32_t lba_base, uint32_t sectors_count, bool force_unit_access, DiscType disc_type, bool raw,
-    std::optional<uint8_t> &nintendo_key, const dvd::Scrambler &scrambler)
+SPTD::Status read_dvd_sectors(SPTD &sptd, uint8_t *sectors, uint32_t sector_size, int32_t lba, uint32_t sectors_count, bool force_unit_access, DiscType disc_type, bool raw)
 {
     SPTD::Status status;
 
     if(disc_type == DiscType::DVD && raw)
     {
-        if(sector_size != sizeof(RecordingFrame))
-            throw_line("invalid sector size for raw DVD read (expected: {}, actual: {})", sizeof(RecordingFrame), sector_size);
+        if(sector_size != sizeof(dvd::RecordingFrame))
+            throw_line("invalid sector size for raw DVD read (expected: {}, actual: {})", sizeof(dvd::RecordingFrame), sector_size);
 
-        std::vector<DataFrame> data_frames(sectors_count);
-        status = cmd_read_omnidrive(sptd, (uint8_t *)data_frames.data(), sizeof(DataFrame), lba_base, sectors_count, OmniDrive_DiscType::DVD, false, force_unit_access, false,
+        std::vector<dvd::DataFrame> data_frames(sectors_count);
+        status = cmd_read_omnidrive(sptd, (uint8_t *)data_frames.data(), sizeof(dvd::DataFrame), lba, sectors_count, OmniDrive_DiscType::DVD, false, force_unit_access, false,
             OmniDrive_Subchannels::NONE, false);
 
         if(!status.status_code)
         {
-            bool valid = true;
             for(uint32_t i = 0; i < sectors_count; ++i)
             {
-                DataFrame df = data_frames[i];
-                int32_t lba = lba_base + (int32_t)i;
-
-                std::optional<uint8_t> key;
-                if(nintendo_key && lba >= 0)
-                    key = lba < (int32_t)ECC_FRAMES ? 0 : *nintendo_key;
-
-                if(scrambler.descramble(df, key))
-                {
-                    if(nintendo_key && lba == 0)
-                        *nintendo_key = nintendo::derive_key(std::span(df.cpr_mai, df.cpr_mai + 8));
-                }
-                else
-                    valid = false;
-
-                auto &recording_frame = (RecordingFrame &)sectors[i * sizeof(RecordingFrame)];
+                auto &recording_frame = (dvd::RecordingFrame &)sectors[i * sizeof(dvd::RecordingFrame)];
                 recording_frame = DataFrame_to_RecordingFrame(data_frames[i]);
             }
-
-            // assume read error if descrambling fails
-            if(!valid)
-                status = SPTD::Status{ 0x02, 0x04, 0x10 };
         }
     }
     else
-        status = cmd_read(sptd, sectors, sector_size, lba_base, sectors_count, force_unit_access);
+        status = cmd_read(sptd, sectors, sector_size, lba, sectors_count, force_unit_access);
 
     return status;
 }
@@ -582,8 +560,6 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
     }
     else
         image_check_exists(options);
-
-    dvd::Scrambler scrambler;
 
     std::vector<Range<int32_t>> protection;
     for(auto const &p : string_to_ranges<int32_t>(options.skip))
@@ -667,7 +643,7 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
                 if(auto &layer0_ld = (READ_DVD_STRUCTURE_LayerDescriptor &)physical_structures.front()[sizeof(CMD_ParameterListHeader)];
                     (kreon_firmware || omnidrive_firmware) && physical_structures.size() == 1 && get_dvd_layer_length(layer0_ld) != sectors_count_capacity)
                 {
-                    xbox = xbox::initialize(protection, *ctx.sptd, layer0_ld, sectors_count_capacity, options.kreon_partial_ss, ctx.drive_config, scrambler);
+                    xbox = xbox::initialize(protection, *ctx.sptd, layer0_ld, sectors_count_capacity, options.kreon_partial_ss, ctx.drive_config);
 
                     if(xbox)
                     {
@@ -909,7 +885,7 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
     // read key from the image file if nintendo and refining (LBA 0 might not need refining and thus will be skipped)
     if(nintendo_key && raw && dump_mode == DumpMode::REFINE)
     {
-        RecordingFrame rf;
+        dvd::RecordingFrame rf;
         State state;
 
         uint32_t lba_index = 0 - cfg.lba_zero;
@@ -919,8 +895,8 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
 
         if(state != State::ERROR_SKIP)
         {
-            if(DataFrame df = RecordingFrame_to_DataFrame(rf); scrambler.descramble(df, *nintendo_key))
-                *nintendo_key = nintendo::derive_key(std::span(df.cpr_mai, df.cpr_mai + 8));
+            dvd::DataFrame df = RecordingFrame_to_DataFrame(rf);
+            nintendo::get_key(nintendo_key, 0, df);
         }
     }
 
@@ -1039,9 +1015,8 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
                 store = true;
             else
             {
-                if(auto status = read_dvd_sectors(*ctx.sptd, drive_data.data(), cfg.sector_size, lba + lba_shift, sectors_to_read, dump_mode == DumpMode::REFINE && refine_counter, ctx.disc_type, raw,
-                       nintendo_key, scrambler);
-                    status.status_code)
+                auto status = read_dvd_sectors(*ctx.sptd, drive_data.data(), cfg.sector_size, lba + lba_shift, sectors_to_read, dump_mode == DumpMode::REFINE && refine_counter, ctx.disc_type, raw);
+                if(status.status_code)
                 {
                     if(options.verbose)
                     {
@@ -1068,7 +1043,26 @@ export bool redumper_dump_dvd(Context &ctx, const Options &options, DumpMode dum
                     }
                 }
                 else
+                {
+                    if(options.verbose)
+                    {
+                        if(ctx.disc_type == DiscType::DVD && raw)
+                        {
+                            for(uint32_t i = 0; i < sectors_to_read; ++i)
+                            {
+                                auto &rf = (dvd::RecordingFrame &)drive_data[i * sizeof(dvd::RecordingFrame)];
+                                dvd::DataFrame df = RecordingFrame_to_DataFrame(rf);
+
+                                int32_t l = lba + lba_shift + (int32_t)i;
+
+                                if(!df.valid(nintendo::get_key(nintendo_key, l, df)))
+                                    LOG_R("[LBA: {}] invalid data frame", l);
+                            }
+                        }
+                    }
+
                     store = true;
+                }
             }
 
             if(store)
